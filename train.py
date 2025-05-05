@@ -36,7 +36,6 @@ def train(train_loader, network, criterion, optimizer, scaler):
 	torch.cuda.empty_cache()
 	
 	network.train()
-	print("=> Starting training loop...")
 
 	for i, batch in enumerate(train_loader):
 		source_img = batch['source'].cuda()
@@ -45,8 +44,6 @@ def train(train_loader, network, criterion, optimizer, scaler):
 		with autocast(args.no_autocast):
 			output = network(source_img)
 			loss = criterion(output, target_img)
-
-		print(f"  [Batch {i}] Loss: {loss.item():.4f}")
 
 		losses.update(loss.item())
 
@@ -194,22 +191,18 @@ if __name__ == '__main__':
 		best_psnr = checkpoint.get('best_psnr', 0)
 
 		for epoch in range(start_epoch, setting['epochs'] + 1):
-			print(f"\n--- Epoch {epoch}/{setting['epochs']} ---")
-
+			print(f"==> Resuming training from epoch {epoch}")
 			loss = train(train_loader, network, criterion, optimizer, scaler)
-			print(f"[Epoch {epoch}] Training loss: {loss:.4f}")
 			writer.add_scalar('train_loss', loss, epoch)
 
 			scheduler.step()
 
 			if epoch % setting['eval_freq'] == 0:
 				avg_psnr = valid(val_loader, network)
-				print(f"[Epoch {epoch}] Validation PSNR: {avg_psnr:.2f} dB")
 				writer.add_scalar('valid_psnr', avg_psnr, epoch)
 
 				if avg_psnr > best_psnr:
 					best_psnr = avg_psnr
-					print(f"[Epoch {epoch}] New best PSNR: {avg_psnr:.2f} dB (saving checkpoint)")
 					torch.save({
 						'state_dict': network.state_dict(),
 						'optimizer': optimizer.state_dict(),
