@@ -7,6 +7,7 @@ from pytorch_msssim import ssim
 from torch.utils.data import DataLoader
 from collections import OrderedDict
 import json
+from pathlib import Path
 
 import wandb
 from tqdm import tqdm
@@ -30,6 +31,8 @@ parser.add_argument("--enable_wandb", action='store_true', default=False, help="
 parser.add_argument("--wandb_team", type=str, default=None, help="Weights & Biases team name")
 parser.add_argument("--wandb_project", type=str, default=None, help="Weights & Biases project name")
 parser.add_argument("--wandb_run_name", type=str, default=None, help="Weights & Biases current run name")
+parser.add_argument("--wandb_restore_ckpt", type=str, default=None, help="Weights & Biases checkpoint")
+parser.add_argument("--wandb_restore_run_path", type=str, default=None, help="Weights & Biases current run path")
 
 args = parser.parse_args()
 
@@ -112,7 +115,7 @@ def get_wandb_run(args, settings, ckpt):
 
 	if args.wandb_run_name is None:
 		 wandb_run_name = "_".join([
-       		"test_",
+	   		"test_",
 			args.model,
 			"ckpt-" + (ckpt or "scratch").split('/')[-1].split('.')[0],
 			f"batch-{settings['batch_size']}",
@@ -137,14 +140,40 @@ if __name__ == '__main__':
 	network = eval(args.model.replace('-', '_'))()
 	network.cuda()
 	exp_name = os.path.basename(os.path.dirname(args.config))
-	
-	if os.path.exists(args.ckpt):
-		print('==> Start testing, current model name: ' + args.model)
-		network.load_state_dict(single(args.ckpt))
-	else:
-		print('==> No existing trained model!')
-		exit(0)
 
+	with open(args.config, 'r') as f:
+		setting = json.load(f)
+  
+	if args.enable_wandb:
+		wandb_run = get_wandb_run(args, setting, args.ckpt)
+	else:
+		wandb_run = None
+
+	assert not ((args.ckpt and (args.wandb_restore_ckpt or args.wandb_restore_run_path))), "Cannot restore from both checkpoint file and wandb"
+	assert bool(args.wandb_restore_ckpt) == bool(args.wandb_restore_run_path), "Must provide either wandb_restore_ckpt and wandb_restore_run_path or neither of them"
+
+	if args.ckpt:
+		assert os.path.isfile(args.ckpt), "--ckpt %s does not exist" % args.ckpt
+		print(f"==> Testing from local checkpoint: {args.ckpt}")
+		ckpt = args.ckpt
+	elif args.wandb_restore_ckpt is not None:
+		print(f"==> Testing from wandb checkpoint: {args.wandb_restore_run_path}:{args.wandb_restore_ckpt}")
+		wandb_restored = wandb.restore(
+			name=args.wandb_restore_ckpt,
+			run_path=args.wandb_restore_run_path,
+			replace=True,
+			root=Path("checkpoints") / args.wandb_restore_run_path,
+		)
+		ckpt = wandb_restored.name
+		wandb_restored.close()
+	else:
+		print('==> No checkpoint provided. Please provide a checkpoint to test.')
+		exit(1)
+
+	if ckpt is not None:
+		checkpoint = torch.load(ckpt)
+
+		network.load_state_dict(single(ckpt))
 	
 	# Select the appropriate loader based on dataset
 	if args.dataset == 'cityscapes_foggy':
@@ -164,15 +193,6 @@ if __name__ == '__main__':
 							 batch_size=1,
 							 num_workers=args.num_workers,
 							 pin_memory=True)
-
-	
-	with open(args.config, 'r') as f:
-		setting = json.load(f)
-  
-	if args.enable_wandb:
-		wandb_run = get_wandb_run(args, setting, args.ckpt)
-	else:
-		wandb_run = None
 
 	result_dir = os.path.join(args.result_dir, args.dataset, args.model)
 	test(test_loader, network, result_dir, wandb_run)
