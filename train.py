@@ -45,7 +45,7 @@ def train(train_loader, network, criterion, optimizer, scaler, epoch, wandb_run=
 	
 	network.train()
 
-	for i, batch in enumerate(tqdm(train_loader, desc=f'Training epoch {epoch}'), leave=False):
+	for i, batch in enumerate(tqdm(train_loader, desc=f'Training epoch {epoch}', leave=False)):
 		source_img = batch['source'].cuda()
 		target_img = batch['target'].cuda()
 
@@ -205,30 +205,8 @@ if __name__ == '__main__':
 
 	if not args.ckpt:
 		print('==> Start training, current model name: ' + args.model)
-		# print(network)
-
-		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
-
 		best_psnr = 0
-		for epoch in tqdm(range(setting['epochs'] + 1), desc=f"Training for {setting['epochs']} epochs"):
-			loss = train(train_loader, network, criterion, optimizer, scaler, epoch=epoch, wandb_run=wandb_run)
-
-			writer.add_scalar('train_loss', loss, epoch)
-
-			scheduler.step()
-
-			if epoch % setting['eval_freq'] == 0:
-				avg_psnr = valid(val_loader, network, step=(epoch + 1) * len(train_loader) - 1, wandb_run=wandb_run)
-				
-				writer.add_scalar('valid_psnr', avg_psnr, epoch)
-
-				if avg_psnr > best_psnr:
-					best_psnr = avg_psnr
-					torch.save({'state_dict': network.state_dict()},
-							os.path.join(save_dir, args.model+'.pth'))
-				
-				writer.add_scalar('best_psnr', best_psnr, epoch)
-
+		start_epoch = 0
 	else:
 		print(f"==> Resuming training from checkpoint: {args.ckpt}")
 		checkpoint = torch.load(args.ckpt)
@@ -243,31 +221,31 @@ if __name__ == '__main__':
 			scaler.load_state_dict(checkpoint['scaler'])
 		start_epoch = checkpoint.get('epoch', 0)
 
-		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
 		best_psnr = checkpoint.get('best_psnr', 0)
 
-		for epoch in range(start_epoch, setting['epochs'] + 1):
-			print(f"==> Resuming training from epoch {epoch}")
-			loss = train(train_loader, network, criterion, optimizer, scaler)
-			writer.add_scalar('train_loss', loss, epoch)
+	writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
 
-			scheduler.step()
+	for epoch in tqdm(range(start_epoch, setting['epochs'] + 1), desc=f"Training for {setting['epochs']} epochs"):
+		loss = train(train_loader, network, criterion, optimizer, scaler, epoch=epoch, wandb_run=wandb_run)
 
-			if epoch % setting['eval_freq'] == 0:
-				avg_psnr = valid(val_loader, network)
-				writer.add_scalar('valid_psnr', avg_psnr, epoch)
+		writer.add_scalar('train_loss', loss, epoch)
 
-				if avg_psnr > best_psnr:
-					best_psnr = avg_psnr
-					torch.save({
-						'state_dict': network.state_dict(),
-						'optimizer': optimizer.state_dict(),
-						'scheduler': scheduler.state_dict(),
-						'scaler': scaler.state_dict(),
-						'epoch': epoch,
-						'best_psnr': best_psnr
-					}, os.path.join(save_dir, args.model + '.pth'))
+		scheduler.step()
 
-				writer.add_scalar('best_psnr', best_psnr, epoch)
+		if epoch % setting['eval_freq'] == 0:
+			avg_psnr = valid(val_loader, network, step=(epoch + 1) * len(train_loader) - 1, wandb_run=wandb_run)
+		
+			writer.add_scalar('valid_psnr', avg_psnr, epoch)
 
-
+			if avg_psnr > best_psnr:
+				best_psnr = avg_psnr
+				torch.save({
+					'state_dict': network.state_dict(),
+					'optimizer': optimizer.state_dict(),
+					'scheduler': scheduler.state_dict(),
+					'scaler': scaler.state_dict(),
+					'epoch': epoch,
+					'best_psnr': best_psnr
+				}, os.path.join(save_dir, args.model + '.pth'))
+			
+			writer.add_scalar('best_psnr', best_psnr, epoch)

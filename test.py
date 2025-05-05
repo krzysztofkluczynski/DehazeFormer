@@ -90,9 +90,6 @@ def test(test_loader, network, result_dir, wandb_run=None):
 
 		out_img = chw_to_hwc(output.detach().cpu().squeeze(0).numpy())
 		write_img(os.path.join(result_dir, 'imgs', filename), out_img)
-  
-		if idx >= 15:
-			break
 
 	f_result.close()
 
