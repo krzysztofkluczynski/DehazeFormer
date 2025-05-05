@@ -45,7 +45,7 @@ def train(train_loader, network, criterion, optimizer, scaler, epoch, wandb_run=
 	
 	network.train()
 
-	for i, batch in enumerate(tqdm(train_loader, desc=f'Training epoch {epoch}')):
+	for i, batch in enumerate(tqdm(train_loader, desc=f'Training epoch {epoch}'), leave=False):
 		source_img = batch['source'].cuda()
 		target_img = batch['target'].cuda()
 
@@ -210,7 +210,7 @@ if __name__ == '__main__':
 		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
 
 		best_psnr = 0
-		for epoch in tqdm(range(setting['epochs'] + 1), desc=f"Training for {setting['epochs']} epochs", leave=False):
+		for epoch in tqdm(range(setting['epochs'] + 1), desc=f"Training for {setting['epochs']} epochs"):
 			loss = train(train_loader, network, criterion, optimizer, scaler, epoch=epoch, wandb_run=wandb_run)
 
 			writer.add_scalar('train_loss', loss, epoch)
