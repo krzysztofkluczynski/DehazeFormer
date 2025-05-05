@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import numpy as np
 import cv2
 
@@ -75,6 +76,63 @@ class PairLoader(Dataset):
 		img_name = self.img_names[idx]
 		source_img = read_img(os.path.join(self.root_dir, 'hazy', img_name)) * 2 - 1
 		target_img = read_img(os.path.join(self.root_dir, 'GT', img_name)) * 2 - 1
+		
+		if self.mode == 'train':
+			[source_img, target_img] = augment([source_img, target_img], self.size, self.edge_decay, self.only_h_flip)
+
+		if self.mode == 'valid':
+			[source_img, target_img] = align([source_img, target_img], self.size)
+
+		return {'source': hwc_to_chw(source_img), 'target': hwc_to_chw(target_img), 'filename': img_name}
+
+
+class CityScapesPairLoader(Dataset):
+	def __init__(self, data_dir, mode, size=256, edge_decay=0, only_h_flip=False):
+		assert mode in ['train', 'valid', 'test']
+
+		self.mode = mode
+		self.size = size
+		self.edge_decay = edge_decay
+		self.only_h_flip = only_h_flip
+		
+		# Map 'valid' to 'val' for cityscapes directory structure
+		cityscapes_mode = 'val' if mode == 'valid' else mode
+		
+		# Define paths for GT and foggy images
+		self.gt_dir = os.path.join(data_dir, 'cityscapes/leftImg8bit', cityscapes_mode)
+		self.hazy_dir = os.path.join(data_dir, 'cityscapes_foggy/leftImg8bit', cityscapes_mode)
+		
+		# Get all city directories
+		self.cities = sorted(os.listdir(self.hazy_dir))
+		
+		# Collect all image paths and names
+		self.img_paths = []
+		self.img_names = []
+		
+		for city in self.cities:
+			city_img_names = sorted(os.listdir(os.path.join(self.hazy_dir, city)))
+			for img_name in city_img_names:
+				if not img_name.endswith('.png'):
+					continue
+       
+				self.img_paths.append((city, img_name))
+				self.img_names.append(img_name)
+		
+		self.img_num = len(self.img_names)
+
+	def __len__(self):
+		return self.img_num
+
+	def __getitem__(self, idx):
+		cv2.setNumThreads(0)
+		cv2.ocl.setUseOpenCL(False)
+
+		# Get image paths
+		city, img_name = self.img_paths[idx]
+		
+		# read image, and scale [0, 1] to [-1, 1]
+		source_img = read_img(os.path.join(self.hazy_dir, city, img_name)) * 2 - 1
+		target_img = read_img(os.path.join(self.gt_dir, city, re.sub(r"_foggy_beta_.*?\.png", r".png", img_name))) * 2 - 1
 		
 		if self.mode == 'train':
 			[source_img, target_img] = augment([source_img, target_img], self.size, self.edge_decay, self.only_h_flip)

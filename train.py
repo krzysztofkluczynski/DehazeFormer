@@ -10,7 +10,7 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from utils import AverageMeter
-from datasets.loader import PairLoader
+from datasets.loader import PairLoader, CityScapesPairLoader
 from models import *
 
 
@@ -19,10 +19,11 @@ parser.add_argument('--model', default='dehazeformer-s', type=str, help='model n
 parser.add_argument('--num_workers', default=16, type=int, help='number of workers')
 parser.add_argument('--no_autocast', action='store_false', default=True, help='disable autocast')
 parser.add_argument('--save_dir', default='./saved_models/', type=str, help='path to models saving')
+parser.add_argument('--ckpt', type=str, required=False, default=None, help='if resuming training, path to model checkpoint')
 parser.add_argument('--data_dir', default='./data/', type=str, help='path to dataset')
 parser.add_argument('--log_dir', default='./logs/', type=str, help='path to logs')
 parser.add_argument('--dataset', default='RESIDE-IN', type=str, help='dataset name')
-parser.add_argument('--exp', default='indoor', type=str, help='experiment setting')
+parser.add_argument('--config', default='configs/indoor/default.json', type=str, help='path to training config file')
 parser.add_argument('--gpu', default='0,1,2,3', type=str, help='GPUs used for training')
 args = parser.parse_args()
 
@@ -76,11 +77,14 @@ def valid(val_loader, network):
 
 
 if __name__ == '__main__':
-	setting_filename = os.path.join('configs', args.exp, args.model+'.json')
-	if not os.path.exists(setting_filename):
-		setting_filename = os.path.join('configs', args.exp, 'default.json')
-	with open(setting_filename, 'r') as f:
+	if not os.path.exists(args.config):
+		raise FileNotFoundError(f"Config file not found: {args.config}")
+	
+	with open(args.config, 'r') as f:
 		setting = json.load(f)
+
+	# Extract exp name from config path for logging and saving
+	exp_name = os.path.basename(os.path.dirname(args.config))
 
 	network = eval(args.model.replace('-', '_'))()
 	network = nn.DataParallel(network).cuda()
@@ -96,31 +100,58 @@ if __name__ == '__main__':
 
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=setting['epochs'], eta_min=setting['lr'] * 1e-2)
 	scaler = GradScaler()
+	
+	if args.dataset == 'cityscapes_foggy':
+		train_dataset = CityScapesPairLoader(
+			data_dir=args.data_dir,
+			mode='train',
+			size=setting['patch_size'],
+			edge_decay=setting['edge_decay'],
+			only_h_flip=setting['only_h_flip']
+		)
+		val_dataset = CityScapesPairLoader(
+			data_dir=args.data_dir, 
+			mode=setting['valid_mode'], 
+			size=setting['patch_size']
+		)
+	else:
+		dataset_dir = os.path.join(args.data_dir, args.dataset)
+		train_dataset = PairLoader(
+			data_dir=dataset_dir,
+			sub_dir='train',
+			mode='train',
+			size=setting['patch_size'],
+			edge_decay=setting['edge_decay'],
+			only_h_flip=setting['only_h_flip']
+		)
+		val_dataset = PairLoader(
+			data_dir=dataset_dir,
+			sub_dir='test',
+			mode=setting['valid_mode'],
+			size=setting['patch_size']
+		)
 
-	dataset_dir = os.path.join(args.data_dir, args.dataset)
-	train_dataset = PairLoader(dataset_dir, 'train', 'train', 
-								setting['patch_size'], setting['edge_decay'], setting['only_h_flip'])
 	train_loader = DataLoader(train_dataset,
-                              batch_size=setting['batch_size'],
-                              shuffle=True,
-                              num_workers=args.num_workers,
-                              pin_memory=True,
-                              drop_last=True)
-	val_dataset = PairLoader(dataset_dir, 'test', setting['valid_mode'], 
-							  setting['patch_size'])
+							  batch_size=setting['batch_size'],
+							  shuffle=True,
+							  num_workers=args.num_workers,
+							  persistent_workers=True,
+							  pin_memory=True,
+							  drop_last=True)
 	val_loader = DataLoader(val_dataset,
-                            batch_size=setting['batch_size'],
-                            num_workers=args.num_workers,
-                            pin_memory=True)
+							batch_size=setting['batch_size'],
+							num_workers=args.num_workers,
+							persistent_workers=True,
+							pin_memory=True)
 
-	save_dir = os.path.join(args.save_dir, args.exp)
+	save_dir = os.path.join(args.save_dir, exp_name)
 	os.makedirs(save_dir, exist_ok=True)
 
-	if not os.path.exists(os.path.join(save_dir, args.model+'.pth')):
+	if not args.ckpt:
 		print('==> Start training, current model name: ' + args.model)
 		# print(network)
 
-		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, args.exp, args.model))
+		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
 
 		best_psnr = 0
 		for epoch in tqdm(range(setting['epochs'] + 1)):
@@ -138,10 +169,9 @@ if __name__ == '__main__':
 				if avg_psnr > best_psnr:
 					best_psnr = avg_psnr
 					torch.save({'state_dict': network.state_dict()},
-                			   os.path.join(save_dir, args.model+'.pth'))
+							os.path.join(save_dir, args.model+'.pth'))
 				
 				writer.add_scalar('best_psnr', best_psnr, epoch)
 
 	else:
-		print('==> Existing trained model')
-		exit(1)
+		raise NotImplementedError("Resuming training from checkpoint is not implemented yet.")

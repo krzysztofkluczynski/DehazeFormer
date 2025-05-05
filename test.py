@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from collections import OrderedDict
 
 from utils import AverageMeter, write_img, chw_to_hwc
-from datasets.loader import PairLoader
+from datasets.loader import PairLoader, CityScapesPairLoader
 from models import *
 
 
@@ -16,21 +16,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model', default='dehazeformer-s', type=str, help='model name')
 parser.add_argument('--num_workers', default=16, type=int, help='number of workers')
 parser.add_argument('--data_dir', default='./data/', type=str, help='path to dataset')
-parser.add_argument('--save_dir', default='./saved_models/', type=str, help='path to models saving')
+parser.add_argument('--ckpt', type=str, help='path to models checkpoint')
 parser.add_argument('--result_dir', default='./results/', type=str, help='path to results saving')
 parser.add_argument('--dataset', default='RESIDE-IN', type=str, help='dataset name')
-parser.add_argument('--exp', default='indoor', type=str, help='experiment setting')
+parser.add_argument('--config', default='configs/indoor/default.json', type=str, help='path to training config file')
 args = parser.parse_args()
 
 
-def single(save_dir):
-	state_dict = torch.load(save_dir, weights_only=False)['state_dict']
+def single(ckpt):
+	state_dict = torch.load(ckpt, weights_only=False)['state_dict']
 	new_state_dict = OrderedDict()
 
 	for k, v in state_dict.items():
 		name = k[7:]
 		new_state_dict[name] = v
 
+	print('==> Loading checkpoint %s' % ckpt)
 	return new_state_dict
 
 
@@ -88,17 +89,30 @@ def test(test_loader, network, result_dir):
 if __name__ == '__main__':
 	network = eval(args.model.replace('-', '_'))()
 	network.cuda()
-	saved_model_dir = os.path.join(args.save_dir, args.exp, args.model+'.pth')
-
-	if os.path.exists(saved_model_dir):
+	exp_name = os.path.basename(os.path.dirname(args.config))
+	
+	if os.path.exists(args.ckpt):
 		print('==> Start testing, current model name: ' + args.model)
-		network.load_state_dict(single(saved_model_dir))
+		network.load_state_dict(single(args.ckpt))
 	else:
 		print('==> No existing trained model!')
 		exit(0)
 
-	dataset_dir = os.path.join(args.data_dir, args.dataset)
-	test_dataset = PairLoader(dataset_dir, 'test', 'test')
+	
+	# Select the appropriate loader based on dataset
+	if args.dataset == 'cityscapes_foggy':
+		test_dataset = CityScapesPairLoader(
+			data_dir=args.data_dir,
+   			mode='test'
+		)
+	else:
+		dataset_dir = os.path.join(args.data_dir, args.dataset)
+		test_dataset = PairLoader(
+			data_dir=dataset_dir,
+			sub_dir='test',
+			mode='test'
+		)
+		
 	test_loader = DataLoader(test_dataset,
 							 batch_size=1,
 							 num_workers=args.num_workers,
