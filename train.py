@@ -37,7 +37,7 @@ def train(train_loader, network, criterion, optimizer, scaler):
 	
 	network.train()
 
-	for batch in train_loader:
+	for i, batch in enumerate(train_loader):
 		source_img = batch['source'].cuda()
 		target_img = batch['target'].cuda()
 
@@ -174,4 +174,44 @@ if __name__ == '__main__':
 				writer.add_scalar('best_psnr', best_psnr, epoch)
 
 	else:
-		raise NotImplementedError("Resuming training from checkpoint is not implemented yet.")
+		print(f"==> Resuming training from checkpoint: {args.ckpt}")
+		checkpoint = torch.load(args.ckpt)
+
+		network.load_state_dict(checkpoint['state_dict'])
+
+		if 'optimizer' in checkpoint:
+			optimizer.load_state_dict(checkpoint['optimizer'])
+		if 'scheduler' in checkpoint:
+			scheduler.load_state_dict(checkpoint['scheduler'])
+		if 'scaler' in checkpoint:
+			scaler.load_state_dict(checkpoint['scaler'])
+		start_epoch = checkpoint.get('epoch', 0)
+
+		writer = SummaryWriter(log_dir=os.path.join(args.log_dir, exp_name, args.model))
+		best_psnr = checkpoint.get('best_psnr', 0)
+
+		for epoch in range(start_epoch, setting['epochs'] + 1):
+			print(f"==> Resuming training from epoch {epoch}")
+			loss = train(train_loader, network, criterion, optimizer, scaler)
+			writer.add_scalar('train_loss', loss, epoch)
+
+			scheduler.step()
+
+			if epoch % setting['eval_freq'] == 0:
+				avg_psnr = valid(val_loader, network)
+				writer.add_scalar('valid_psnr', avg_psnr, epoch)
+
+				if avg_psnr > best_psnr:
+					best_psnr = avg_psnr
+					torch.save({
+						'state_dict': network.state_dict(),
+						'optimizer': optimizer.state_dict(),
+						'scheduler': scheduler.state_dict(),
+						'scaler': scaler.state_dict(),
+						'epoch': epoch,
+						'best_psnr': best_psnr
+					}, os.path.join(save_dir, args.model + '.pth'))
+
+				writer.add_scalar('best_psnr', best_psnr, epoch)
+
+
