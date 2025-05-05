@@ -24,7 +24,7 @@ args = parser.parse_args()
 
 
 def single(save_dir):
-	state_dict = torch.load(save_dir)['state_dict']
+	state_dict = torch.load(save_dir, weights_only=False)['state_dict']
 	new_state_dict = OrderedDict()
 
 	for k, v in state_dict.items():
