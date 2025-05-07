@@ -6,6 +6,11 @@ import torch.nn.functional as F
 from pytorch_msssim import ssim
 from torch.utils.data import DataLoader
 from collections import OrderedDict
+import json
+from pathlib import Path
+
+import wandb
+from tqdm import tqdm
 
 from utils import AverageMeter, write_img, chw_to_hwc
 from datasets.loader import PairLoader, CityScapesPairLoader
@@ -20,6 +25,15 @@ parser.add_argument('--ckpt', type=str, help='path to models checkpoint')
 parser.add_argument('--result_dir', default='./results/', type=str, help='path to results saving')
 parser.add_argument('--dataset', default='RESIDE-IN', type=str, help='dataset name')
 parser.add_argument('--config', default='configs/indoor/default.json', type=str, help='path to training config file')
+
+# Wandb options
+parser.add_argument("--enable_wandb", action='store_true', default=False, help="Use Weights & Biases for logging")
+parser.add_argument("--wandb_team", type=str, default=None, help="Weights & Biases team name")
+parser.add_argument("--wandb_project", type=str, default=None, help="Weights & Biases project name")
+parser.add_argument("--wandb_run_name", type=str, default=None, help="Weights & Biases current run name")
+parser.add_argument("--wandb_restore_ckpt", type=str, default=None, help="Weights & Biases checkpoint")
+parser.add_argument("--wandb_restore_run_path", type=str, default=None, help="Weights & Biases current run path")
+
 args = parser.parse_args()
 
 
@@ -35,7 +49,7 @@ def single(ckpt):
 	return new_state_dict
 
 
-def test(test_loader, network, result_dir):
+def test(test_loader, network, result_dir, wandb_run=None):
 	PSNR = AverageMeter()
 	SSIM = AverageMeter()
 
@@ -46,7 +60,7 @@ def test(test_loader, network, result_dir):
 	os.makedirs(os.path.join(result_dir, 'imgs'), exist_ok=True)
 	f_result = open(os.path.join(result_dir, 'results.csv'), 'w')
 
-	for idx, batch in enumerate(test_loader):
+	for idx, batch in enumerate(tqdm(test_loader)):
 		input = batch['source'].cuda()
 		target = batch['target'].cuda()
 
@@ -70,7 +84,7 @@ def test(test_loader, network, result_dir):
 		PSNR.update(psnr_val)
 		SSIM.update(ssim_val)
 
-		print('Test: [{0}]\t'
+		tqdm.write('Test: [{0}]\t'
 			  'PSNR: {psnr.val:.02f} ({psnr.avg:.02f})\t'
 			  'SSIM: {ssim.val:.03f} ({ssim.avg:.03f})'
 			  .format(idx, psnr=PSNR, ssim=SSIM))
@@ -85,19 +99,81 @@ def test(test_loader, network, result_dir):
 	os.rename(os.path.join(result_dir, 'results.csv'), 
 			  os.path.join(result_dir, '%.02f | %.04f.csv'%(PSNR.avg, SSIM.avg)))
 
+	if wandb_run is not None:
+		wandb_run.log({
+			"test_psnr": PSNR.avg,
+			"test_ssim": SSIM.avg
+		})
+
+def get_wandb_run(args, settings, ckpt):
+	assert args.enable_wandb and args.wandb_project is not None and args.wandb_team is not None, \
+		"get_wandb_run was called, but not all required arguments were provided."
+
+	WANDB_TOKEN = os.getenv("WANDB_TOKEN")
+	assert WANDB_TOKEN, "WANDB_TOKEN environment variable not set. Please set it to your Weights & Biases API key."
+	wandb.login(key=WANDB_TOKEN, verify=True)
+
+	if args.wandb_run_name is None:
+		 wandb_run_name = "_".join([
+	   		"test_",
+			args.model,
+			"ckpt-" + (ckpt or "scratch").split('/')[-1].split('.')[0],
+			f"batch-{settings['batch_size']}",
+			f"lr-{settings['lr']}-{settings['optimizer']}",
+			f"edge-{settings['edge_decay']}",
+			f"patch-{settings['patch_size']}",
+			f"batch-{settings['batch_size']}",
+			f"epochs-{settings['epochs']}",
+		 ])
+	else:
+		 wandb_run_name = args.wandb_run_name
+
+	run = wandb.init(
+		project=args.wandb_project,
+		entity=args.wandb_team,
+		name=wandb_run_name,
+		config=dict(**vars(args), **settings),
+	)
+	return run
 
 if __name__ == '__main__':
 	network = eval(args.model.replace('-', '_'))()
 	network.cuda()
 	exp_name = os.path.basename(os.path.dirname(args.config))
-	
-	if os.path.exists(args.ckpt):
-		print('==> Start testing, current model name: ' + args.model)
-		network.load_state_dict(single(args.ckpt))
-	else:
-		print('==> No existing trained model!')
-		exit(0)
 
+	with open(args.config, 'r') as f:
+		setting = json.load(f)
+  
+	if args.enable_wandb:
+		wandb_run = get_wandb_run(args, setting, args.ckpt)
+	else:
+		wandb_run = None
+
+	assert not ((args.ckpt and (args.wandb_restore_ckpt or args.wandb_restore_run_path))), "Cannot restore from both checkpoint file and wandb"
+	assert bool(args.wandb_restore_ckpt) == bool(args.wandb_restore_run_path), "Must provide either wandb_restore_ckpt and wandb_restore_run_path or neither of them"
+
+	if args.ckpt:
+		assert os.path.isfile(args.ckpt), "--ckpt %s does not exist" % args.ckpt
+		print(f"==> Testing from local checkpoint: {args.ckpt}")
+		ckpt = args.ckpt
+	elif args.wandb_restore_ckpt is not None:
+		print(f"==> Testing from wandb checkpoint: {args.wandb_restore_run_path}:{args.wandb_restore_ckpt}")
+		wandb_restored = wandb.restore(
+			name=args.wandb_restore_ckpt,
+			run_path=args.wandb_restore_run_path,
+			replace=True,
+			root=Path("checkpoints") / args.wandb_restore_run_path,
+		)
+		ckpt = wandb_restored.name
+		wandb_restored.close()
+	else:
+		print('==> No checkpoint provided. Please provide a checkpoint to test.')
+		exit(1)
+
+	if ckpt is not None:
+		checkpoint = torch.load(ckpt)
+
+		network.load_state_dict(single(ckpt))
 	
 	# Select the appropriate loader based on dataset
 	if args.dataset == 'cityscapes_foggy':
@@ -119,4 +195,4 @@ if __name__ == '__main__':
 							 pin_memory=True)
 
 	result_dir = os.path.join(args.result_dir, args.dataset, args.model)
-	test(test_loader, network, result_dir)
+	test(test_loader, network, result_dir, wandb_run)
