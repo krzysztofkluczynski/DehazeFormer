@@ -1,0 +1,11 @@
+method: bayes
+metric:
+  name: valid_psnr
+  goal: maximize
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-5
+  loss_type:
+    values: ["l1", "l2"]
